@@ -11,7 +11,7 @@ const indexHTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>tiny-vless-ws</title>
+<title>tiny</title>
 <style>
 html{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}body{display:grid;min-height:100vh;margin:0;place-items:center}main{text-align:center}h1{font-size:1.5rem;margin:0 0 .5rem}p{margin:0;opacity:.7}
 </style>
@@ -19,7 +19,7 @@ html{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}body{display:gri
 </head>
 <body>
 <main>
-<h1>tiny-vless-ws</h1>
+<h1>tiny</h1>
 <p id="status">Checking service…</p>
 </main>
 </body>
