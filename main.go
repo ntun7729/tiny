@@ -25,6 +25,7 @@ const (
 	maxConfiguredMessageBytes = 64 << 20
 	handshakeTimeout          = 10 * time.Second
 	dialTimeout               = 10 * time.Second
+	dialFallbackDelay         = 100 * time.Millisecond
 )
 
 type config struct {
