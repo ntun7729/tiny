@@ -15,6 +15,8 @@ import (
 
 const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+var websocketEarlyDataReplacer = strings.NewReplacer("+", "-", "/", "_", "=", "")
+
 type proxyServer struct {
 	uuid              [16]byte
 	wsPath            string
@@ -30,8 +32,9 @@ func newProxyServer(cfg config) *proxyServer {
 		wsPath:          cfg.wsPath,
 		maxMessageBytes: cfg.maxMessageBytes,
 		dialer: net.Dialer{
-			Timeout:   dialTimeout,
-			KeepAlive: 30 * time.Second,
+			Timeout:       dialTimeout,
+			KeepAlive:     30 * time.Second,
+			FallbackDelay: dialFallbackDelay,
 		},
 	}
 }
@@ -103,6 +106,12 @@ func (s *proxyServer) handleVLESSUpgrade(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	earlyData, hasEarlyData, err := decodeWebSocketEarlyData(r.Header.Get("Sec-WebSocket-Protocol"), s.maxMessageBytes)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusRequestHeaderFieldsTooLarge)
+		return
+	}
+
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "websocket hijacking is unavailable", http.StatusInternalServerError)
@@ -122,7 +131,11 @@ func (s *proxyServer) handleVLESSUpgrade(w http.ResponseWriter, r *http.Request)
 	response := "HTTP/1.1 101 Switching Protocols\r\n" +
 		"Upgrade: websocket\r\n" +
 		"Connection: Upgrade\r\n" +
-		"Sec-WebSocket-Accept: " + websocketAcceptKey(key) + "\r\n\r\n"
+		"Sec-WebSocket-Accept: " + websocketAcceptKey(key) + "\r\n"
+	if hasEarlyData {
+		response += "Sec-WebSocket-Protocol: " + r.Header.Get("Sec-WebSocket-Protocol") + "\r\n"
+	}
+	response += "\r\n"
 
 	if _, err := rw.WriteString(response); err != nil {
 		return
@@ -138,9 +151,12 @@ func (s *proxyServer) handleVLESSUpgrade(w http.ResponseWriter, r *http.Request)
 		maxMessageBytes: s.maxMessageBytes,
 	}
 
-	firstMessage, err := ws.NextMessage()
-	if err != nil {
-		return
+	firstMessage := earlyData
+	if !hasEarlyData {
+		firstMessage, err = ws.NextMessage()
+		if err != nil {
+			return
+		}
 	}
 
 	request, err := parseVLESSRequest(firstMessage, s.uuid)
@@ -156,6 +172,23 @@ func (s *proxyServer) handleVLESSUpgrade(w http.ResponseWriter, r *http.Request)
 	case commandUDP:
 		s.handleUDP(ws, request)
 	}
+}
+
+func decodeWebSocketEarlyData(protocol string, maxMessageBytes int64) ([]byte, bool, error) {
+	protocol = strings.TrimSpace(protocol)
+	if protocol == "" {
+		return nil, false, nil
+	}
+
+	encoded := websocketEarlyDataReplacer.Replace(protocol)
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(decoded) == 0 {
+		return nil, false, nil
+	}
+	if int64(len(decoded)) > maxMessageBytes {
+		return nil, false, errMessageTooBig
+	}
+	return decoded, true, nil
 }
 
 func isWebSocketUpgradeAttempt(r *http.Request) bool {
