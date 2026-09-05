@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -28,6 +30,32 @@ func TestValidateWebSocketRequest(t *testing.T) {
 	request.Header.Del("Connection")
 	if _, err := validateWebSocketRequest(request); err == nil {
 		t.Fatal("missing Connection token unexpectedly accepted")
+	}
+}
+
+func TestDecodeWebSocketEarlyData(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte{0xfb, 0xff, 0xef, 0x00, 0x01, 0x02, 0x03}
+	protocol := base64.StdEncoding.EncodeToString(payload)
+
+	got, ok, err := decodeWebSocketEarlyData(protocol, 1024)
+	if err != nil {
+		t.Fatalf("decodeWebSocketEarlyData: %v", err)
+	}
+	if !ok {
+		t.Fatal("valid early data was not detected")
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("decoded payload = %x, want %x", got, payload)
+	}
+
+	if got, ok, err := decodeWebSocketEarlyData("not a valid websocket protocol!", 1024); err != nil || ok || got != nil {
+		t.Fatalf("invalid protocol = %x, %v, %v; want nil, false, nil", got, ok, err)
+	}
+
+	if _, _, err := decodeWebSocketEarlyData(protocol, 4); !errors.Is(err, errMessageTooBig) {
+		t.Fatalf("oversized early data error = %v, want %v", err, errMessageTooBig)
 	}
 }
 
