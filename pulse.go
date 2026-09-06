@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,7 +16,7 @@ import (
 const (
 	pulseSessionTTL        = 30 * time.Second
 	pulseMaxSessions       = 1024
-	pulseMaxBufferedPacket = 64
+	pulseMaxBufferedPacket = 30
 )
 
 var (
@@ -86,7 +87,7 @@ func (q *pulseUploadQueue) addPacket(seq uint64, payload []byte) error {
 	}
 	q.mode = pulseUploadPacket
 
-	if seq < q.next {
+	if seq < q.next || (q.current != nil && seq == q.next) {
 		return nil
 	}
 	if _, exists := q.packets[seq]; exists {
@@ -121,6 +122,11 @@ func (q *pulseUploadQueue) Read(buffer []byte) (int, error) {
 	for {
 		q.mu.Lock()
 
+		if q.closed {
+			q.mu.Unlock()
+			return 0, io.EOF
+		}
+
 		if q.current != nil {
 			n, err := q.current.Read(buffer)
 			if errors.Is(err, io.EOF) {
@@ -149,11 +155,6 @@ func (q *pulseUploadQueue) Read(buffer []byte) (int, error) {
 				q.mu.Unlock()
 				continue
 			}
-		}
-
-		if q.closed {
-			q.mu.Unlock()
-			return 0, io.EOF
 		}
 
 		q.cond.Wait()
@@ -432,11 +433,42 @@ func (s *proxyServer) handlePulseStreamUpload(w http.ResponseWriter, r *http.Req
 		flusher.Flush()
 	}
 
-	select {
-	case <-session.done:
-	case <-r.Context().Done():
-		_ = session.upload.Close()
+	if r.Header.Get("Referer") == "" {
+		select {
+		case <-session.done:
+		case <-r.Context().Done():
+			_ = session.upload.Close()
+		}
+		return
 	}
+
+	writer := &pulseHTTPWriter{writer: w}
+	timer := time.NewTimer(pulseStreamUpKeepaliveDelay())
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-session.done:
+			return
+		case <-r.Context().Done():
+			_ = session.upload.Close()
+			return
+		case <-timer.C:
+			if _, err := writer.Write(pulseStreamUpPadding()); err != nil {
+				_ = session.upload.Close()
+				return
+			}
+			timer.Reset(pulseStreamUpKeepaliveDelay())
+		}
+	}
+}
+
+func pulseStreamUpKeepaliveDelay() time.Duration {
+	return time.Duration(20+rand.IntN(61)) * time.Second
+}
+
+func pulseStreamUpPadding() []byte {
+	return bytes.Repeat([]byte{'X'}, 100+rand.IntN(901))
 }
 
 func (s *proxyServer) handlePulsePacket(w http.ResponseWriter, r *http.Request, sessionID string, seq uint64) {
