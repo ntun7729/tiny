@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 )
 
@@ -84,4 +85,52 @@ func parseVLESSRequest(message []byte, expectedUUID [16]byte) (vlessRequest, err
 		port:    port,
 		payload: message[cursor:],
 	}, nil
+}
+
+func readVLESSRequest(reader io.Reader, expectedUUID [16]byte) (vlessRequest, error) {
+	fixed := make([]byte, 18)
+	if _, err := io.ReadFull(reader, fixed); err != nil {
+		return vlessRequest{}, err
+	}
+
+	addonLength := int(fixed[17])
+	tail := make([]byte, addonLength+4)
+	if _, err := io.ReadFull(reader, tail); err != nil {
+		return vlessRequest{}, err
+	}
+
+	message := make([]byte, 0, len(fixed)+len(tail)+17)
+	message = append(message, fixed...)
+	message = append(message, tail...)
+
+	addressType := tail[addonLength+3]
+	switch addressType {
+	case 1:
+		address := make([]byte, 4)
+		if _, err := io.ReadFull(reader, address); err != nil {
+			return vlessRequest{}, err
+		}
+		message = append(message, address...)
+	case 2:
+		var length [1]byte
+		if _, err := io.ReadFull(reader, length[:]); err != nil {
+			return vlessRequest{}, err
+		}
+		message = append(message, length[0])
+		domain := make([]byte, int(length[0]))
+		if _, err := io.ReadFull(reader, domain); err != nil {
+			return vlessRequest{}, err
+		}
+		message = append(message, domain...)
+	case 3:
+		address := make([]byte, 16)
+		if _, err := io.ReadFull(reader, address); err != nil {
+			return vlessRequest{}, err
+		}
+		message = append(message, address...)
+	default:
+		return vlessRequest{}, errors.New("unsupported address type")
+	}
+
+	return parseVLESSRequest(message, expectedUUID)
 }
