@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestPulsePathMeta(t *testing.T) {
@@ -77,6 +78,65 @@ func TestPulseUploadQueueReordersPackets(t *testing.T) {
 	}
 }
 
+func TestPulseUploadQueueIgnoresReplayDuringPartialRead(t *testing.T) {
+	t.Parallel()
+
+	queue := newPulseUploadQueue()
+	defer queue.Close()
+
+	if err := queue.addPacket(0, []byte("abcdef")); err != nil {
+		t.Fatal(err)
+	}
+
+	first := make([]byte, 3)
+	if _, err := io.ReadFull(queue, first); err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != "abc" {
+		t.Fatalf("first read = %q", first)
+	}
+
+	if err := queue.addPacket(0, []byte("abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.addPacket(1, []byte("ghi")); err != nil {
+		t.Fatal(err)
+	}
+
+	rest := make([]byte, 6)
+	if _, err := io.ReadFull(queue, rest); err != nil {
+		t.Fatal(err)
+	}
+	if string(rest) != "defghi" {
+		t.Fatalf("remaining stream = %q", rest)
+	}
+
+	queue.mu.Lock()
+	buffered := len(queue.packets)
+	queue.mu.Unlock()
+	if buffered != 0 {
+		t.Fatalf("replayed packet remained buffered: %d", buffered)
+	}
+}
+
+func TestPulseUploadQueueCloseStopsBufferedData(t *testing.T) {
+	t.Parallel()
+
+	queue := newPulseUploadQueue()
+	if err := queue.addPacket(0, []byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	buffer := make([]byte, 4)
+	n, err := queue.Read(buffer)
+	if n != 0 || !errors.Is(err, io.EOF) {
+		t.Fatalf("Read after close = %d, %v; want 0, EOF", n, err)
+	}
+}
+
 func TestPulseUploadModeConflict(t *testing.T) {
 	t.Parallel()
 
@@ -87,6 +147,25 @@ func TestPulseUploadModeConflict(t *testing.T) {
 	}
 	if err := queue.setStream(io.NopCloser(bytes.NewReader(nil))); !errors.Is(err, errPulseModeConflict) {
 		t.Fatalf("setStream error = %v", err)
+	}
+}
+
+func TestPulseStreamUpKeepaliveRanges(t *testing.T) {
+	t.Parallel()
+
+	for range 100 {
+		delay := pulseStreamUpKeepaliveDelay()
+		if delay < 20*time.Second || delay > 80*time.Second {
+			t.Fatalf("keepalive delay = %s", delay)
+		}
+
+		padding := pulseStreamUpPadding()
+		if len(padding) < 100 || len(padding) > 1000 {
+			t.Fatalf("padding length = %d", len(padding))
+		}
+		if !bytes.Equal(padding, bytes.Repeat([]byte{'X'}, len(padding))) {
+			t.Fatal("keepalive padding contains non-X data")
+		}
 	}
 }
 
