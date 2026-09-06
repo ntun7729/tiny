@@ -9,6 +9,7 @@ COPY server.go ./
 COPY vless.go ./
 COPY relay.go ./
 COPY websocket.go ./
+COPY pulse.go ./
 COPY web.go ./
 
 RUN --mount=type=cache,target=/root/.cache/go-build \
