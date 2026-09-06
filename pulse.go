@@ -2,9 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -402,16 +402,12 @@ func (s *proxyServer) handlePulseDownlink(w http.ResponseWriter, r *http.Request
 	}
 	defer s.deletePulseSession(sessionID, session)
 
-	stop := contextAfterFunc(r, func() { _ = session.upload.Close() })
+	stop := context.AfterFunc(r.Context(), func() { _ = session.upload.Close() })
 	defer stop()
 
 	preparePulseDownload(w)
 	writer := &pulseHTTPWriter{writer: w}
 	s.relayPulse(session.upload, writer)
-}
-
-func contextAfterFunc(r *http.Request, f func()) func() bool {
-	return context.AfterFunc(r.Context(), f)
 }
 
 func (s *proxyServer) handlePulseStreamUpload(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -549,4 +545,3 @@ func closePulseReader(reader io.Reader) {
 }
 
 var _ io.ReadCloser = (*pulseUploadQueue)(nil)
-var _ net.Conn
