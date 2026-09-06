@@ -191,6 +191,9 @@ func (w *pulseHTTPWriter) Write(payload []byte) (int, error) {
 }
 
 func isPulseRequestPath(requestPath, basePath string) bool {
+	if basePath == "" {
+		return false
+	}
 	return requestPath == basePath || requestPath == basePath+"/" || strings.HasPrefix(requestPath, basePath+"/")
 }
 
