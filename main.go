@@ -19,20 +19,25 @@ import (
 )
 
 const (
-	defaultPort               = 8080
-	defaultWSPath             = "/assets/js/main.js"
-	defaultMaxMessageBytes    = 4 << 20
-	maxConfiguredMessageBytes = 64 << 20
-	handshakeTimeout          = 10 * time.Second
-	dialTimeout               = 10 * time.Second
-	dialFallbackDelay         = 100 * time.Millisecond
+	defaultPort                = 8080
+	defaultWSPath              = "/assets/js/main.js"
+	defaultPulsePath           = "/assets/api/v1"
+	defaultMaxMessageBytes     = 4 << 20
+	maxConfiguredMessageBytes  = 64 << 20
+	defaultPulseMaxPacketBytes = 1_000_000
+	maxPulsePacketBytes        = 8 << 20
+	handshakeTimeout           = 10 * time.Second
+	dialTimeout                = 10 * time.Second
+	dialFallbackDelay          = 100 * time.Millisecond
 )
 
 type config struct {
-	uuid            [16]byte
-	port            int
-	wsPath          string
-	maxMessageBytes int64
+	uuid                [16]byte
+	port                int
+	wsPath              string
+	pulsePath           string
+	maxMessageBytes     int64
+	pulseMaxPacketBytes int64
 }
 
 func main() {
@@ -63,7 +68,7 @@ func main() {
 		serveErr <- httpServer.Serve(listener)
 	}()
 
-	log.Printf("listening addr=%s ws_path=%s", listener.Addr(), cfg.wsPath)
+	log.Printf("listening addr=%s ws_path=%s pulse_path=%s", listener.Addr(), cfg.wsPath, cfg.pulsePath)
 
 	select {
 	case err := <-serveErr:
@@ -72,6 +77,7 @@ func main() {
 		}
 	case <-shutdownCtx.Done():
 		handler.closeConnections()
+		handler.closePulseSessions()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -100,16 +106,31 @@ func loadConfig() (config, error) {
 		return config{}, fmt.Errorf("WS_PATH: %w", err)
 	}
 
+	pulsePath, err := parsePulsePath(os.Getenv("PULSE_PATH"))
+	if err != nil {
+		return config{}, fmt.Errorf("PULSE_PATH: %w", err)
+	}
+	if pulsePath == wsPath {
+		return config{}, errors.New("PULSE_PATH must be different from WS_PATH")
+	}
+
 	maxMessageBytes, err := parseMaxMessageBytes(os.Getenv("MAX_WS_MESSAGE_BYTES"))
 	if err != nil {
 		return config{}, fmt.Errorf("MAX_WS_MESSAGE_BYTES: %w", err)
 	}
 
+	pulseMaxPacketBytes, err := parsePulseMaxPacketBytes(os.Getenv("PULSE_MAX_PACKET_BYTES"))
+	if err != nil {
+		return config{}, fmt.Errorf("PULSE_MAX_PACKET_BYTES: %w", err)
+	}
+
 	return config{
-		uuid:            uuid,
-		port:            port,
-		wsPath:          wsPath,
-		maxMessageBytes: maxMessageBytes,
+		uuid:                uuid,
+		port:                port,
+		wsPath:              wsPath,
+		pulsePath:           pulsePath,
+		maxMessageBytes:     maxMessageBytes,
+		pulseMaxPacketBytes: pulseMaxPacketBytes,
 	}, nil
 }
 
@@ -169,6 +190,30 @@ func parseWSPath(value string) (string, error) {
 	return value, nil
 }
 
+func parsePulsePath(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return defaultPulsePath, nil
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	if strings.ContainsAny(value, "?#") {
+		return "", errors.New("must be a path without a query string or fragment")
+	}
+	value = strings.TrimSuffix(value, "/")
+	if value == "" {
+		value = "/"
+	}
+	if path.Clean(value) != value {
+		return "", errors.New("must be a clean absolute path")
+	}
+	if value == "/" || value == "/healthz" {
+		return "", errors.New("conflicts with a web endpoint")
+	}
+	return value, nil
+}
+
 func parseMaxMessageBytes(value string) (int64, error) {
 	if strings.TrimSpace(value) == "" {
 		return defaultMaxMessageBytes, nil
@@ -176,6 +221,17 @@ func parseMaxMessageBytes(value string) (int64, error) {
 	size, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || size < 1024 || size > maxConfiguredMessageBytes {
 		return 0, fmt.Errorf("must be between 1024 and %d", maxConfiguredMessageBytes)
+	}
+	return size, nil
+}
+
+func parsePulseMaxPacketBytes(value string) (int64, error) {
+	if strings.TrimSpace(value) == "" {
+		return defaultPulseMaxPacketBytes, nil
+	}
+	size, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || size < 1024 || size > maxPulsePacketBytes {
+		return 0, fmt.Errorf("must be between 1024 and %d", maxPulsePacketBytes)
 	}
 	return size, nil
 }
