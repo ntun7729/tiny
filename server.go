@@ -18,24 +18,31 @@ const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 var websocketEarlyDataReplacer = strings.NewReplacer("+", "-", "/", "_", "=", "")
 
 type proxyServer struct {
-	uuid              [16]byte
-	wsPath            string
-	maxMessageBytes   int64
-	dialer            net.Dialer
-	connectionMu      sync.Mutex
-	activeConnections map[net.Conn]struct{}
+	uuid                [16]byte
+	wsPath              string
+	pulsePath           string
+	maxMessageBytes     int64
+	pulseMaxPacketBytes int64
+	dialer              net.Dialer
+	connectionMu        sync.Mutex
+	activeConnections   map[net.Conn]struct{}
+	pulseMu             sync.Mutex
+	pulseSessions       map[string]*pulseSession
 }
 
 func newProxyServer(cfg config) *proxyServer {
 	return &proxyServer{
-		uuid:            cfg.uuid,
-		wsPath:          cfg.wsPath,
-		maxMessageBytes: cfg.maxMessageBytes,
+		uuid:                cfg.uuid,
+		wsPath:              cfg.wsPath,
+		pulsePath:           cfg.pulsePath,
+		maxMessageBytes:     cfg.maxMessageBytes,
+		pulseMaxPacketBytes: cfg.pulseMaxPacketBytes,
 		dialer: net.Dialer{
 			Timeout:       dialTimeout,
 			KeepAlive:     30 * time.Second,
 			FallbackDelay: dialFallbackDelay,
 		},
+		pulseSessions: make(map[string]*pulseSession),
 	}
 }
 
@@ -71,6 +78,10 @@ func (s *proxyServer) closeConnections() {
 func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == s.wsPath && isWebSocketUpgradeAttempt(r) {
 		s.handleVLESSUpgrade(w, r)
+		return
+	}
+	if isPulseRequestPath(r.URL.Path, s.pulsePath) {
+		s.handlePulse(w, r)
 		return
 	}
 
